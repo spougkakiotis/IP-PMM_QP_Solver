@@ -1,10 +1,10 @@
-function [solution_statistics] = Netlib_library(set,type,tol,max_IP_iter,printlevel,la_mode,fid)
+function [solution_statistics] = Maros_Meszaros_library(set,type,tol,max_IP_iter,printlevel,la_mode,fid)
 % ==================================================================================================================== %
-% This function loads various NETLIB problems and solves them using IP_PMM.
+% This function loads various QP problems from the Maros Meszaros library and solves them using IP_PMM.
 %
 % INPUT: 
 % The first input argument---set---must contain a set of integer numbers 
-% between 1 and 96 (number of Netlib problems). It must be given 
+% between 1 and 122 (number of Netlib problems). It must be given 
 % as a row vector! It is then used 
 % to call the respective problems from the test set. For example, for set = {1,2}
 % the function attempts to solve only the first two problems of the test set.
@@ -12,8 +12,8 @@ function [solution_statistics] = Netlib_library(set,type,tol,max_IP_iter,printle
 %
 % The second input argument---type---must be empty, or take between two values:
 %               1) "standard",
-%               2) "presolved",
-% specifying whether we want to solve the standard or the presolved test set.
+%               2) "CONT",
+% specifying whether we want to solve the standard or the CONT (5 problems) test set.
 % (Default at "standard")
 % The third input argument---tol---indicates the tolerance required.
 % (Default at 1e-6)
@@ -42,55 +42,69 @@ function [solution_statistics] = Netlib_library(set,type,tol,max_IP_iter,printle
 %               problem_names -> contains the names of the problems solved
 % ____________________________________________________________________________________________________________________ %
     if (isempty(set) || nargin < 1)
-        error('Netlib problem(s) not specified.\n');
-    end
-    if (nnz(set) > 96)
-        error('Too many problems requested. The problem set is not so large.\n');
+        error('Maros/Meszaros problem(s) not specified.\n');
     end
     if (nargin < 2 || isempty(type))        type = "standard"; end
     if (nargin < 3 || isempty(tol))         tol = 1e-6;        end
     if (nargin < 4 || isempty(max_IP_iter)) max_IP_iter = 100; end
     if (nargin < 5 || isempty(printlevel))  printlevel = 1;    end
-    if (nargin < 6 || isempty(la_mode))     la_mode = "exact"; end
-    if (nargin < 7 || isempty(fid))         fid = 1;           end
 
     %The path on which all the netlib problems lie
-    Netlib_path = './Problem_Data/Netlib_LP_Collection'; 
-    %Finds all the Netlib problems and stores their names in a struct
-    d = dir(fullfile(Netlib_path,'*.mat'));
-    %Open the file to write the results
-    fileID = fopen('./Output_files/Netlib_tabular_format_IP_PMM_runs.txt','a+');
+    if (type == "standard")
+        QP_problems_path = 'Problem_Data/Maros_Meszaros_QP_Collection/maros'; 
+    elseif (type == "CONT")
+        QP_problems_path = 'Problem_Data/Maros_Meszaros_QP_Collection/maros_CONT'; 
+    else
+        error("Incorrect input argument for type. Use either %s or %s.\n","standard","CONT");
+    end
 
+    %Finds all the QP problems and stores their names in a struct
+    d = dir(fullfile(QP_problems_path,'*.mat')); 
+    %Each indice i=1..num_of_QP_files gives the name of each QP problem though d(i).name
+    
+    %Open the file to write the results
+    fileID = fopen('./Output_files/QP_problems_tabular_fortmat_final_results.txt','a+');
+    
     solution_statistics = struct();
     solution_statistics.total_iters = 0; solution_statistics.total_time = 0;
     solution_statistics.problems_converged = 0; solution_statistics.tol = tol;
     solution_statistics.problem_attempts = 0; solution_statistics.success_rate = 0;
     solution_statistics.total_Krylov_iters = 0;
-    solution_statistics.objective_values = zeros(size(set));    % To keep objective values.
-    solution_statistics.status_vec = zeros(size(set));          % To keep convergence status.
-    solution_statistics.max_nnzL = zeros(size(set));            % To keep the maximum nnz of a Cholesky factor found.
+    solution_statistics.objective_values = zeros(size(set));
+    solution_statistics.status_vec = zeros(size(set));
     solution_statistics.problem_names = strings(size(set));     % To keep the names of the problems solved.
+    solution_statistics.max_nnzL = zeros(size(set));            % To keep the maximum nnz of a Cholesky factor found.
+    scaling_direction = 'l'; scaling_option = 3; 
     
-    obj_const_term = 0;  % This library does not have any fields for constant terms.
+    model = struct();
+    if (type == "standard") % b is not present but will be added
+        fields = ["H","A","g","xl","xu","al","au","g0","name","b"];
+    else % g0, name and b are not present but will be added
+        fields = ["Q","A","c","lb","ub","rl","ru","g0","name","b"];
+    end
     it_counter = 0;
-    for k = set %Each indice k=1..num_of_netlib_files gives the name of each netlib problem through d(i).name
+    for k = set
         it_counter = it_counter + 1;
-        load(fullfile(Netlib_path,d(k).name));        % Loads two structs: The standard model and 
-                                                      % a presolved model.
-        %fields = {'A','obj','sense','rhs','lb','ub','vtype','modelname','varnames','constrnames'};
-        if (type == "standard")
-            problem = model;
-        elseif (type == "presolved")
-            problem = presolved_model;
+        if (isfield(model,fields)) %If any of the fields is missing, dont remove anything
+            model = rmfield(model,fields); %Remove all fields before loading new ones
         end
-        [problem.obj, problem.A, problem.rhs, problem.lb, problem.ub] = ...
-        LP_Convert_to_Box_Form(problem.obj, problem.A,  problem.rhs, problem.lb, problem.ub, problem.sense);
-        n = size(problem.lb,1);
-        m = size(problem.rhs,1);
-        Q = sparse(n,n);
-        [solution_struct] = Set_Up_IP_PMM(problem.A,Q,problem.rhs,problem.obj,obj_const_term,...
-                                          problem.lb,problem.ub,tol,max_IP_iter,printlevel,la_mode,fid);
-        time = solution_struct.pre_time + solution_struct.runtime;
+        model = load(fullfile(QP_problems_path,d(k).name));
+        if (type == "CONT")
+            model.name = d(k).name;
+            model.g0 = 0;
+        end
+    
+        % Convert to problem to a box form which coincides with IP-PMM's input.
+        [model.(fields(2)),model.(fields(1)),model.(fields(10)),...
+        model.(fields(3)),model.(fields(4)),model.(fields(5))] =  ...
+        Maros_Meszaros_Convert_to_Box_Form(model.(fields(2)),model.(fields(1)),model.(fields(3)), ...
+                         model.(fields(6)), model.(fields(7)), model.(fields(4)), model.(fields(5)));
+                     
+        D = Scale_the_problem(model.(fields(2)),scaling_option,scaling_direction);
+        time = 0;  tic;
+        [solution_struct] = Set_Up_IP_PMM(model.(fields(2)),model.(fields(1)),model.(fields(10)),model.(fields(3)),...
+                                       model.(fields(8)),model.(fields(4)),model.(fields(5)),tol,max_IP_iter,printlevel,la_mode,fid);                                      
+        time = time + toc;
         solution_statistics.total_iters = solution_statistics.total_iters + solution_struct.IP_iter;
         solution_statistics.total_time = solution_statistics.total_time + time;  
         solution_statistics.total_Krylov_iters = solution_statistics.total_Krylov_iters + solution_struct.Krylov_its;
@@ -105,25 +119,24 @@ function [solution_statistics] = Netlib_library(set,type,tol,max_IP_iter,printle
             fprintf(fileID,['Dual infeasibility has been detected\n',...
                             'Returning the last iterate.\n']); 
         elseif (solution_struct.opt == 4)                                   % Numerical Error
-            fprintf(fileID,['Method terminated due to numerical error.\n',...   
+            fprintf(fileID,['Method terminated due to numerical error.\n',...
                             'Returning the last iterate.\n']); 
         else                                                                % Reached maximum iterations
            fprintf(fileID,['Maximum number of iterations reached.\n',...
                            'Returning the last iterate.\n']); 
         end
-        fprintf(fileID,['Name = %s & IP iters = %d & & Krylov iters = %d & max_nnzL = %.2e & ' ...
-            'Time = %.2e & opt = %s  \n'],problem.modelname, solution_struct.IP_iter, solution_struct.Krylov_its,...
-                                         solution_struct.max_nnzL, time, string(solution_struct.opt == 1)); 
+        fprintf(fileID,'%s & %d & %d & opt = %s  \n',model.(fields(9)), solution_struct.IP_iter,...
+                                                     time, string(solution_struct.opt == 1)); 
         solution_statistics.objective_values(it_counter) = solution_struct.obj_val;
         solution_statistics.status_vec(it_counter) = solution_struct.opt;
+        solution_statistics.problem_names(it_counter) = string(model.(fields(9)));
         solution_statistics.problem_attempts = solution_statistics.problem_attempts + 1;
-        solution_statistics.problem_names(it_counter) = string(model.modelname);
         solution_statistics.success_rate = ...
             solution_statistics.problems_converged/solution_statistics.problem_attempts;
     end
     solution_statistics.solution_struct= solution_struct;
-    fprintf(fileID,['The total IPM iterates were: %d (with %d total Krylov iterates) and the total time was %d.',...
-                    ' Problems converged: %d.\n'],solution_statistics.total_iters,solution_statistics.total_Krylov_iters,...
+    fprintf(fileID,['The total iterates were: %d and the total time was %d.',...
+                    '%d problems converged.\n'],solution_statistics.total_iters,...
                     solution_statistics.total_time,solution_statistics.problems_converged);
     fclose(fileID);
 end
