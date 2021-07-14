@@ -1,10 +1,10 @@
-function [D,D_L] = Scale_the_problem(A,scale_option,direction)
+function [D] = Scale_the_problem(A,scale_option,direction)
 % ==================================================================================================================== %
 % [D] = Scale_the_problem(A): 
 % -------------------------------------------------------------------------------------------------------------------- %
 % This function, takes as an input a sparse matrix A, representing the constraints of a quadratic progrmaming problem.
 % It checks whether the matrix is well scaled, and if not, it applies some linear transformations to the matrix, in 
-% order to improve its numerical properties. The method return a diagonal matrix D, which the user should 
+% order to improve its numerical properties. The method returns a diagonal matrix D, which the user should 
 % use in order to recover the solution of the initial problem (after solving the scaled one).
 % The optional parameter: scale_option. This parameter can take 3 values:
 %   (i)   scale_option = 0, no scaling will be applied.
@@ -19,7 +19,7 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
 %                                   https://en.wikibooks.org/wiki/GLPK/Scaling
 %
 % Author: Spyridon Pougkakiotis.
-% ==================================================================================================================== %
+% ____________________________________________________________________________________________________________________ %
     if (nargin < 2 || isempty(scale_option))
         scale_option = 1; % Set geometric scaling as the default option.
     end
@@ -31,7 +31,6 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
     end     
     pos_A = abs(A);       % Need it to identify non-zero elements.
     D = zeros(size(A,2),1);
-    D_L = [];
     pos_ind = pos_A > 0;   
     % ================================================================================================================ %
     % Based on the input parameters, build the desired scaling factor.
@@ -45,8 +44,9 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
             rows = pos_A(:,j) > 0; % Find all non-zero elements for this column
             if (any(rows))
                 %size(pos_A(rows,j))
-                maximum = max(pos_A(rows,j));
-                minimum = min(pos_A(rows,j));
+                values = pos_A(rows,j);
+                maximum = max(values);
+                minimum = min(values);
                 if (maximum*minimum > 10^(-12) && maximum*minimum < 10^(12))
                     D(j) = 1/sqrt(maximum*minimum);
                 else
@@ -59,8 +59,8 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
     elseif (scale_option == 2) % Equilibrium scaling (applied on columns for efficiency).
         fprintf('The constraint matrix is scaled. Equilibrium scaling is employed.\n');
         for j = 1:size(A,2)
-            rows = pos_A(:,j) > 0; % Find all non-zero elements for this column.
-            maximum = max(pos_A(rows,j));
+            %rows = pos_A(:,j) > 0; % Find all non-zero elements for this column.
+            maximum = max(pos_A(:,j));
             if (maximum > 10^(-6))
                 D(j) = 1/maximum;
             else
@@ -72,8 +72,9 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
         for j = 1:size(A,2)
             rows = pos_A(:,j) > 0; % Find all non-zero elements for this column.
             if (any(rows))
-                maximum = max(pos_A(rows,j));
-                minimum = min(pos_A(rows,j));
+                values = pos_A(rows,j);
+                maximum = max(values);
+                minimum = min(values);
                 p = nextpow2(sqrt(maximum*minimum));
                 if (maximum*minimum > 10^(-12) && maximum*minimum < 10^(12))
                     D(j) = 1/(2^(p-1));
@@ -90,8 +91,9 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
             rows = pos_A(:,j) > 0; % Find all non-zero elements for this column
             if (any(rows))
                 %size(pos_A(rows,j))
-                maximum = max(pos_A(rows,j));
-                minimum = min(pos_A(rows,j));
+                values = pos_A(rows,j);
+                maximum = max(values);
+                minimum = min(values);
                 if (maximum > 10^3 && minimum < 10^(-3))
                     p = nextpow2(sqrt(maximum*minimum));
                     D(j) = 1/(2^(p-1));
@@ -108,9 +110,8 @@ function [D,D_L] = Scale_the_problem(A,scale_option,direction)
                 D(j) = 1; % Extreme case, where one column is all zeros.
             end
         end
-    end
-    
-    % ================================================================================================================ %
+    end  
+    % ________________________________________________________________________________________________________________ %
 end
 % ******************************************************************************************************************** %
 % END OF FILE
