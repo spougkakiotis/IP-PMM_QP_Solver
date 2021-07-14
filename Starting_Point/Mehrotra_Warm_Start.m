@@ -1,6 +1,6 @@
 function [x,y,z_l,z_u] = Mehrotra_Warm_Start(A_struct, Q_struct, b, c, lb, ub, lb_vars, ub_vars)
 % ==================================================================================================================== %
-% Initialization - Mehrotra's Initial Point for QP:
+% Initialization - Mehrotra-like Initial Point for QP:
 % -------------------------------------------------------------------------------------------------------------------- %
 % Choose an initial starting point (x,y,z_l,z_u). For that, we ignore the box constraints, 
 % and solve the relaxed regularized optimization problem (which has a closed form solution). Then,
@@ -12,16 +12,17 @@ function [x,y,z_l,z_u] = Mehrotra_Warm_Start(A_struct, Q_struct, b, c, lb, ub, l
     % Use PCG to solve two least-squares problems for efficiency (along with the Jacobi preconditioner). 
     % ---------------------------------------------------------------------------------------------------------------- %
     m = size(b,1); n = size(c,1);
-    delta_0 = 10;
+    delta_0 = 1e-3;
     D = A_struct.NE_diag + delta_0;
     Jacobi_Prec = @(x) (1./D).*x;
     NE_fun = @(x) (A_struct.A(A_struct.A_tr(x)) + delta_0.*x);
-    x = pcg(NE_fun,b,1e-3,min(100,m),Jacobi_Prec);
+    if (norm(b) <= 1e-6) b = b + 1e-3.*ones(m,1); end
+    x = pcg(NE_fun,b,1e-3,min(200,m),Jacobi_Prec);
     x = A_struct.A_tr(x);
-    y = pcg(NE_fun,A_struct.A(c+Q_struct.Q(x)),1e-3,min(100,m),Jacobi_Prec);
+    y = pcg(NE_fun,A_struct.A(c+Q_struct.Q(x)),1e-3,min(200,m),Jacobi_Prec);
     z = (c + Q_struct.Q(x) - A_struct.A_tr(y));
     z_l = zeros(n,1); z_u = zeros(n,1);
-    z_l(lb_vars) = z(lb_vars); z_u(ub_vars) = z(ub_vars);   %lb_vars and ub_vars are mutually exclusive (IP-PMM format).
+    z_l(lb_vars) = z(lb_vars); z_u(ub_vars) = -z(ub_vars);   %lb_vars and ub_vars are mutually exclusive (IP-PMM format).
     % ________________________________________________________________________________________________________________ %
     num_lb_vars = nnz(lb_vars); num_ub_vars = nnz(ub_vars);
     % ================================================================================================================ %
@@ -33,7 +34,6 @@ function [x,y,z_l,z_u] = Mehrotra_Warm_Start(A_struct, Q_struct, b, c, lb, ub, l
     if (norm(ub(ub_vars)-x(ub_vars)) <= 10^(-4)) 
         x(ub_vars) = -0.1.*ones(num_ub_vars,1) + ub(ub_vars); % 0.1 is chosen arbitrarily
     end
-
     if (norm(z_l(lb_vars)) <= 10^(-4))
         z_l(lb_vars) = 0.1.*ones(num_lb_vars,1); % 0.1 is chosen arbitrarily
     end
