@@ -20,6 +20,7 @@ function ctr_struct = build_control_structure()
     ctr_struct.no_primal_update = 0;            % Dual infeasibility detection counter.
     ctr_struct.warn_no_est_update = 5;          % Check infeasibility if the estimates have not 
                                                 % been updated for 5 iterations.
+    ctr_struct.set_proximal_inner_IR = false;   % If true, the preconditioner is applied via Proximal Point method.
     % ________________________________________________________________________________________________________________ %
 end
 % ******************************************************************************************************************** %
