@@ -15,10 +15,10 @@ if (default == 1)
     max_IP_iter = 200;                                      % Maximum number of IP iterations.
     printlevel = 3;                                         % Printing choice (see IP-PMM documentation).
     la_mode = "inexact";
-    problem_set = "Maros-Meszaros";
-    %problem_set = "Netlib";
+   % problem_set = "Maros-Meszaros";
+    problem_set = "Netlib";
     %problem_set = "SuiteSparse";
- %  problem_set = "Pearson_PDE_Optimization";
+   problem_set = "Pearson_PDE_Optimization";
 else
     fprintf('Choose a value for the allowed error tolerance.\n');
     while(true)
@@ -83,11 +83,11 @@ end
 
 
 if (problem_set == "Netlib")
-    set = 1:24;                                          % A row vector of integers in [1,96]
+    set = 12;                                          % A row vector of integers in [1,96]
     type = "standard";                                  % Use "presolved" for the presolved Netlib test set.
     solution_statistics = Netlib_library(set,type,tol,max_IP_iter,printlevel,la_mode,fid);
 elseif (problem_set == "Maros-Meszaros")
-    set = 12:15;                                        % A row vector of integers in [1,122]
+    set = 7;                                        % A row vector of integers in [1,122]
     type = "standard";                                  % Use "CONT" (1:5) for the CONT problem test set, or "standard" for the standard set.
     solution_statistics = Maros_Meszaros_library(set,type,tol,max_IP_iter,printlevel,la_mode,fid);
 elseif (problem_set == "SuiteSparse")

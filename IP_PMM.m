@@ -204,7 +204,7 @@ while (ctr_struct.IP_iter < maxit)
     % ================================================================================================================ %
     % Check terminatio criteria
     % ---------------------------------------------------------------------------------------------------------------- %
-    if (p_inf/(1+norm(b,inf)) < tol && d_inf/(1+norm(c,inf)) < tol &&  mu < tol )
+    if (p_inf/(1+norm(b)) < tol && d_inf/(1+norm(c)) < tol &&  mu < tol )
         fprintf('optimal solution found\n');
         ctr_struct.opt = 1;
         break;
