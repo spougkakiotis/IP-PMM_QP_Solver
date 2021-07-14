@@ -1,4 +1,4 @@
-function [x,y,z_l,z_u,opt,IP_iter] = IP_PMM(A_struct,Q_struct,Newton_struct,b,c,lb,ub,tol,maxit,printlevel,fid)
+function [x,y,z_l,z_u,opt,IP_iter,Krylov_its,max_nnzL] = IP_PMM(A_struct,Q_struct,Newton_struct,b,c,lb,ub,tol,maxit,printlevel,fid)
 % ==================================================================================================================== %
 % This function is an Interior Point-Proximal Method of Multipliers, suitable for solving linear and convex quadratic
 % programming problems. The method takes as input a problem of the following form:
@@ -51,14 +51,20 @@ function [x,y,z_l,z_u,opt,IP_iter] = IP_PMM(A_struct,Q_struct,Newton_struct,b,c,
 %                                              0: turn off iteration output
 %                                              1: print primal and dual residual and duality measure
 %                                              2: print step length
-%                                              3: print intermediate Krylov iterates
+%                                              3: print intermediate Krylov iterate statistics
 % IP_PMM(A, Q, Newton_struct, b, c, lb, ub, tol, max_it, printlevel,fid): prints on a file with indicator fid.
 % OUTPUT: [x,y,z,opt,iter], where:
 %         x: primal solution
 %         y: Lagrange multiplier vector
 %         z_l: dual slack variables corresponding to the lower bound constraints
 %         z_u: dual slack variables corresponding to the upper bound constraints
-%         opt: true if problem was solved to optimality, false if problem not solved or found infeasible.
+%         opt: the possible outcomes are the following:
+%                   0: non-optimal -> maximum iterations reached
+%                   1: optimal -> converge to the accepted tolerance
+%                   2: infeasible -> primal infeasible 
+%                   3: infeasible -> dual infeasible
+%                   4: ill-conditioning -> problem terminated due to numerical error
+%                   5: inaccuracy -> problem terminated due to insufficient accuracy
 %         iter: numeber of iterations to termination.
 %
 % Author: Spyridon Pougkakiotis, January 2021, Edinburgh.
@@ -82,7 +88,7 @@ zero_function = @(x) zeros(size(x,1),1);
 if (isempty(A_struct)) 
     A_struct.A = zero_function;
     A_struct.A_tr = zero_fuction;
-    A_struct.NE_diag = zero_function;
+    A_struct.NE_diag = zeros(m,1);
 end
 if (isempty(Q_struct))
     Q_struct.Q = zero_function; 
@@ -99,12 +105,12 @@ if (~isa(Q_struct,'struct'))
            "For more information, see the description of the algorithm."]); 
 end
 % Set default values for missing parameters.
-if (nargin < 6  || isempty(lb))            lb = -Inf.*ones(n,1); end
-if (nargin < 7  || isempty(ub))            ub = Inf.*ones(n,1);  end
-if (nargin < 8 || isempty(tol))            tol = 1e-4;           end
-if (nargin < 9 || isempty(maxit))          maxit = 100;          end
-if (nargin < 10 || isempty(printlevel))    printlevel = 1;       end
-if (nargin < 11 || isempty(fid))           fid = 1;       end
+if (nargin < 6  || isempty(lb))            lb = -Inf.*ones(n,1);          end
+if (nargin < 7  || isempty(ub))            ub = Inf.*ones(n,1);           end
+if (nargin < 8 || isempty(tol))            tol = 1e-4;                    end
+if (nargin < 9 || isempty(maxit))          maxit = 100;                   end
+if (nargin < 10 || isempty(printlevel))    printlevel = 1;                end
+if (nargin < 11 || isempty(fid))           fid = 1;                       end
 % ____________________________________________________________________________________________________________________ %
 
 % ==================================================================================================================== %
@@ -119,14 +125,12 @@ num_lb_vars = nnz(lb_vars); num_ub_vars = nnz(ub_vars);   % number of variables 
 % Starting point (Set mu = 0 if there are no bound constraints at all).
 % -------------------------------------------------------------------------------------------------------------------- %
 [x,y,z_l,z_u] = Mehrotra_Warm_Start(A_struct, Q_struct, b, c, lb, ub, lb_vars, ub_vars);
-%x = 1.*ones(n,1);
-%y = 1.*ones(m,1);
-%z_l = 1.*ones(n,1);
-%z_u = zeros(n,1);
+
 lambda = y;   zeta = x;                                   % Initial estimate of the primal and dual optimal solution.
 if (num_lb_vars + num_ub_vars > 0)                        % Initial value of mu (when bound constraints are present).
     mu = (x(lb_vars)-lb(lb_vars))'*z_l(lb_vars) + ...
          (ub(ub_vars) - x(ub_vars))'*z_u(ub_vars);
+   % mu = max((mu)/(num_lb_vars + num_ub_vars),0.1);
     mu = (mu)/(num_lb_vars + num_ub_vars);
     res_mu_l = zeros(n,1); res_mu_u = zeros(n,1);         % To be used as residuals for complementarity.
     mu_prev = mu;                                         % Keep track the previous value of mu.
@@ -139,13 +143,34 @@ end
 % Parameter Initialization.
 % -------------------------------------------------------------------------------------------------------------------- %
 ctr_struct = build_control_structure();                   % Contains all the monitoring parameters of IP-PMM.
-IP_PMM_header(fid,printlevel);                            % Set the header for printing
+ctr_struct.isQP = (Q_struct.Q_1_norm > 0);                % isQP monitors whether we are solving a QP (true) or 
+                                                          % an LP (false).
 delta = 8;  rho = 8;                                      % Initial dual and primal regularization value.
-reg_limit = max(5*tol*(1/max(A_struct.A_1_norm*A_struct.A_inf_norm,...
-                Q_struct.Q_1_norm*Q_struct.Q_inf_norm)),5*1e-10);
+reg_limit = max(0.1*min(tol,1e-6)*(1/max(1e0,max(A_struct.A_1_norm*A_struct.A_inf_norm,...
+                Q_struct.Q_1_norm*Q_struct.Q_inf_norm))),5e-10);
 reg_limit = min(reg_limit,1e-8);                          % Controlled perturbation.
+pivot_thr = 1e-10;                                        % Minimum pivot threshold for factorization methods.  
+if (Newton_struct.la_mode == "inexact")
+    iterlin = 50;                                         % Estimate of Krylov iterations.
+    droptol = 1e2;                                        % Initial dropping tolerance for the outer preconditioner.
+    roof = 3e7;                                           % Dangerously large nnz of the preconditioner ->
+                                                          % be more conservative.
+    itertot = zeros(2*maxit,1);                           % Keep track the total number of inner and outer iterations.
+    Krylov_tol = tol;                                     % Absolute tolerance for the Krylov solver.
+    Krylov_its = 0;                                       % Keep track of total # of Krylov iterations.
+    max_nnzL = 0;
+    if (Q_struct.nnz == nnz(Q_struct.diag))  % Linear programming or Separable quadratic objective.
+        solver = "pcg";
+        maxit_Krylov = 100;
+        fprintf(fid,"Employing pcg as Q is zero or diagonal. Normal equations are solved.\n"); 
+    else
+        solver = "minres";
+        maxit_Krylov = 200;
+        fprintf(fid,"Employing minres as Q is neither zero nor diagonal, or we prefer solving the augmented system.\n"); 
+    end
+end
+IP_PMM_header(fid,printlevel,Newton_struct.la_mode);      % Set the header for printing.
 % ____________________________________________________________________________________________________________________ %
-
 
 while (ctr_struct.IP_iter < maxit)
 % -------------------------------------------------------------------------------------------------------------------- %
@@ -174,173 +199,193 @@ while (ctr_struct.IP_iter < maxit)
     end
     res_p = nr_res_p - delta.*(y-lambda);                           % Regularized primal residual.
     res_d = nr_res_d + rho.*(x-zeta);                               % Regularized dual residual.
+    p_inf = norm(nr_res_p,inf);
+    d_inf = norm(nr_res_d,inf);
     % ================================================================================================================ %
     % Check terminatio criteria
     % ---------------------------------------------------------------------------------------------------------------- %
-    if (norm(nr_res_p)/(1+norm(b)) < tol && norm(nr_res_d)/(1+norm(c)) < tol &&  mu < tol )
+    if (p_inf/(1+norm(b,inf)) < tol && d_inf/(1+norm(c,inf)) < tol &&  mu < tol )
         fprintf('optimal solution found\n');
         ctr_struct.opt = 1;
         break;
     end
-    if ((norm(y-lambda)> 10^10 && norm(res_p) < tol && no_dual_update > 5)) 
+    if ((norm(y-lambda)> 10^10 && norm(res_p) < tol && ctr_struct.no_dual_update > 5)) 
         fprintf('The primal-dual problem is infeasible\n');
         ctr_struct.opt = 2;
         break;
     end
-    if ((norm(x-zeta)> 10^10 && norm(res_d) < tol && no_primal_update > 5))
+    if ((norm(x-zeta)> 10^10 && norm(res_d) < tol && ctr_struct.no_primal_update > 5))
         fprintf('The primal-dual problem is infeasible\n');
         ctr_struct.opt = 3;
         break;
     end
     % ________________________________________________________________________________________________________________ %
     ctr_struct.IP_iter = ctr_struct.IP_iter+1;
+    if (num_lb_vars + num_ub_vars > 0)
+        [x,z_l,z_u,mu] = boundary_control(x,z_l,z_u,lb,ub,lb_vars,ub_vars,num_lb_vars,num_ub_vars,mu);
+        mu_prev = mu;
+    end
     % ================================================================================================================ %
     % Avoid the possibility of converging to a local minimum -> Decrease the minimum regularization value.
     % ---------------------------------------------------------------------------------------------------------------- %
-  %  if (ctr_struct.no_primal_update > 5 && rho == reg_limit && reg_limit ~= 5*1e-13)
-  %      reg_limit = 5*1e-13;
-  %      ctr_struct.no_primal_update = 0;
-  %      ctr_struct.no_dual_update = 0;
-  %  elseif (ctr_struct.no_dual_update > 5 && delta == reg_limit && reg_limit ~= 5*1e-13)
-  %      reg_limit = 5*1e-13;
-  %      ctr_struct.no_primal_update = 0;
-  %      ctr_struct.no_dual_update = 0;
-  %  end
+    if (reg_limit ~= 5e-13)
+        [ctr_struct,reg_limit] = avoid_local_min(ctr_struct,rho,delta,reg_limit);
+       % pivot_thr = reg_limit/5;
+    end
     % ________________________________________________________________________________________________________________ %
     % ================================================================================================================ %
-    % Compute the Newton factorization.
+    % Compute the Newton factorization (exact case) or gather information about the Newton matrix (inexact case)
     % ---------------------------------------------------------------------------------------------------------------- %
-    pivot_thr = reg_limit/5;
-    NS = Newton_struct.Newton_fact(x,z_l,z_u,delta,rho,lb,ub,lb_vars,ub_vars,pivot_thr);
+    if (Newton_struct.la_mode == "exact")
+        NSdata = Newton_struct.Newton_fact(x,z_l,z_u,delta,rho,pivot_thr);
+    elseif (Newton_struct.la_mode == "inexact")
+        NSdata = Newton_struct.Newton_matrix_data(ctr_struct.IP_iter,A_struct,Q_struct,x,z_l,z_u,...
+                                                  delta,rho,pivot_thr,solver,Newton_struct.prec_approach,p_inf,d_inf); 
+        if (Newton_struct.prec_approach == "LDL_based_preconditioner")   % Indicate which minres solver to use.
+            NSdata.minres_setting = Newton_struct.minres_setting;
+        end
+    end
     % ________________________________________________________________________________________________________________ %
  
     % ================================================================================================================ %
     % Predictor step: Solve the Newton system and compute a centrality measure.
     % ---------------------------------------------------------------------------------------------------------------- %
-    if (num_lb_vars + num_ub_vars > 0)          % Predictor only in the case we have inequality constraints.
-        res_mu_l(lb_vars) = (lb(lb_vars)-x(lb_vars)).*z_l(lb_vars);
-        res_mu_u(ub_vars) = (x(ub_vars)-ub(ub_vars)).*z_u(ub_vars);
-        % ============================================================================================================ %
-        % Solve the Newton system with the predictor right hand side -> Optimistic view, solve as if you wanted to 
-        %                                                               solve the original problem in 1 iteration.
-        % ------------------------------------------------------------------------------------------------------------ %
-        [dx,dy,dz_l,dz_u,instability] = Newton_backsolve(NS,res_p,res_d,res_mu_l,res_mu_u);
-        if (instability == true) % Checking if the matrix is too ill-conditioned. Mitigate it.
-            if (ctr_struct.retry_p < ctr_struct.max_tries)
-                fprintf('The system is re-solved, due to bad conditioning  of predictor system.\n')
-                delta = delta*100;  rho = rho*100;
-                ctr_struct.IP_iter = ctr_struct.IP_iter -1;
-                ctr_struct.retry_p = ctr_struct.retry_p + 1;
-                reg_limit = min(reg_limit*10,tol);
-                continue;
-            else
-                fprintf('The system matrix is too ill-conditioned.\n');
-                ctr_struct.opt = 0;
-                break;
-            end
-        end
-        ctr_struct.retry_p = 0;
-        % ____________________________________________________________________________________________________________ %
-        
-        % ============================================================================================================ %
-        % Step in the box (primal) and non-negativity orthant (dual).
-        % ------------------------------------------------------------------------------------------------------------ %
-        pos_idx = false(n,1);   neg_idx = false(n,1);
-        neg_idz_l = false(n,1); neg_idz_u = false(n,1);
-        pos_idx(ub_vars) = dx(ub_vars) > 0;
-        neg_idx(lb_vars) = dx(lb_vars) < 0;
-        neg_idz_l(lb_vars) = dz_l(lb_vars) < 0;
-        neg_idz_u(ub_vars) = dz_u(ub_vars) < 0;
-        alphamax_x = min([1;(lb(neg_idx)-x(neg_idx))./dx(neg_idx);...
-                         (ub(pos_idx)-x(pos_idx))./dx(pos_idx)]);
-        alphamax_z = min([1;-z_l(neg_idz_l)./dz_l(neg_idz_l);...
-                         -z_u(neg_idz_u)./dz_u(neg_idz_u)]);
-        tau = 0.995;
-        alpha_x = tau*alphamax_x;
-        alpha_z = tau*alphamax_z;
-        % ____________________________________________________________________________________________________________ %
-        centrality_measure = (x(lb_vars)-lb(lb_vars) + alpha_x.*dx(lb_vars))'*(z_l(lb_vars) + alpha_z.*dz_l(lb_vars)) + ...
-                             (ub(ub_vars) - x(ub_vars)-alpha_x.*dx(ub_vars))'*(z_u(ub_vars) + alpha_z.*dz_u(ub_vars));
-        mu = (centrality_measure/((num_lb_vars + num_ub_vars)*mu))^3*mu; %(centrality_measure/(num_lb_vars + num_ub_vars));
-    else
-        dx = zeros(n,1); dy = zeros(m,1); dz_l = zeros(n,1); dz_u = zeros(n,1);
-    end
-    % ________________________________________________________________________________________________________________ %
-        
+    predictor = true;
+    res_mu_l(lb_vars) = (lb(lb_vars)-x(lb_vars)).*z_l(lb_vars);
+    res_mu_u(ub_vars) = (x(ub_vars)-ub(ub_vars)).*z_u(ub_vars);
     % ================================================================================================================ %
-    % Corrector step: Solve Newton system with the corrector right hand side. Solve as if you wanted to direct the 
-    %                 method in the center of the central path.
+    % Solve the Newton system with the predictor right hand side -> Optimistic view, solve as if you wanted to 
+    %                                                               solve the original problem in 1 iteration.
     % ---------------------------------------------------------------------------------------------------------------- %
-        res_mu_l(lb_vars) = mu.*ones(num_lb_vars,1)-(x(lb_vars)-lb(lb_vars)).*z_l(lb_vars)-dx(lb_vars).*dz_l(lb_vars);
-        res_mu_u(ub_vars) = mu.*ones(num_ub_vars,1)+(x(ub_vars)-ub(ub_vars)).*z_u(ub_vars)+dx(ub_vars).*dz_u(ub_vars);
-        % ============================================================================================================ %
-        % Solve the Newton system with the predictor right hand side -> Optimistic view, solve as if you wanted to 
-        %                                                               solve the original problem in 1 iteration.
-        % ------------------------------------------------------------------------------------------------------------ %
-        [dx_c,dy_c,dz_l_c,dz_u_c,instability] = Newton_backsolve(NS,res_p,res_d,res_mu_l,res_mu_u);
-        if (instability == true) % Checking if the matrix is too ill-conditioned. Mitigate it.
-            if (ctr_struct.retry_c < ctr_struct.max_tries)
-                fprintf('The system is re-solved, due to bad conditioning of corrector.\n')
-                delta = delta*100;
-                rho = rho*100;
-                ctr_struct.IP_iter = ctr_struct.IP_iter -1;
-                ctr_struct.retry_c = ctr_struct.retry_c + 1;
-                mu = mu_prev;
-                reg_limit = min(reg_limit*10,tol);
-                continue;
-            else
-                fprintf('The system matrix is too ill-conditioned.\n');
-                ctr_struct.opt = 0;
+    if (Newton_struct.la_mode == "exact")
+        [dx,dy,dz_l,dz_u,instability] = Newton_struct.Newton_backsolve(NSdata,res_p,res_d,res_mu_l,res_mu_u); 
+        nnzL = nnz(NSdata.L);
+        if (ctr_struct.IP_iter == 1)
+            max_nnzL = nnzL;
+        end
+    elseif (Newton_struct.la_mode == "inexact")
+        if (ctr_struct.IP_iter > 1) 
+            if (~PS.instability)
+                if (~PS.double_approximation || PS.no_prec || Newton_struct.prec_approach == "LDL_based_preconditioner")
+                    nnzL = nnz(PS.L_M);
+                else
+                    nnzL = nnz(PS.R_NE_PS.L_11) + nnz(PS.R_NE_PS.L_22);
+                end
+                if (nnzL > max_nnzL)
+                    max_nnzL = nnzL;
+                end
+            end
+        else
+            nnzL = 0;
+        end  
+        [droptol] = Newton_struct.Precond_struct.set_out_precond_tol(droptol,iterlin,maxit_Krylov,nnzL,roof);
+        PS = Newton_struct.Precond_struct.build_out_precond(NSdata,droptol,mu,ctr_struct.set_proximal_inner_IR); % Preconditioner for the Newton system.
+        if (PS.instability == false)
+            [dx,dy,dz_l,dz_u,instability,iterlin,drop_direction,Reinforce_Inner_IR] = ...
+             Newton_struct.Newton_itersolve(predictor,NSdata,PS,res_p,res_d,res_mu_l,...
+                                            res_mu_u,maxit_Krylov,Krylov_tol);
+        else
+            instability = true;
+        end
+        % Keep track of the number of iterations performed. If an iter. is repeated, also keep track of those iterations.
+        itertot(2*ctr_struct.IP_iter-1) = itertot(2*ctr_struct.IP_iter-1) + iterlin;  
+        if (drop_direction == true)
+            [ctr_struct,mu,delta,rho] = control_direction_accuracy(ctr_struct,mu,mu_prev,delta,rho,predictor);
+            if (ctr_struct.opt == 5)    % 5 signifies failure due to inaccuracy
                 break;
             end
+            continue;
+        end
+    end
+    if (instability == true)        % Checking if the matrix is too ill-conditioned. Mitigate it.
+        [ctr_struct,delta,rho,reg_limit] = control_ill_conditioning(ctr_struct,rho,delta,reg_limit,tol,predictor);
+        if (ctr_struct.opt == 4)    % 4 signifies failure due to numerical instability.
+            break;
+        end
+        continue;
+    end
+    ctr_struct.retry_p = 0;
+    % ________________________________________________________________________________________________________________ %
+      
+    % ================================================================================================================ %
+    % Step in the lower-or-upper bound (primal) and non-negativity orthant (dual).
+    % ---------------------------------------------------------------------------------------------------------------- %
+    if (num_lb_vars + num_ub_vars > 0)
+        [alpha_x,alpha_z] = step_to_the_boundary(x,z_l,z_u,dx,dz_l,dz_u,lb,ub,lb_vars,ub_vars);
+    else
+        alpha_x = 1;         % If we have no inequality constraints, Newton method is exact -> Take full step.
+        alpha_z = 1;        
+    end    
+    % ________________________________________________________________________________________________________________ %
+    if (num_lb_vars + num_ub_vars > 0)   % Corrector only in the case we have inequality constraints.
+        % ============================================================================================================ %
+        % Corrector step: Solve Newton system with the corrector right hand side. Solve as if you wanted to direct the 
+        %                 method in the center of the central path.
+        % ------------------------------------------------------------------------------------------------------------ %
+        predictor = false;
+        centr_measure = (x(lb_vars)-lb(lb_vars) + alpha_x.*dx(lb_vars))'*(z_l(lb_vars) + alpha_z.*dz_l(lb_vars)) + ...
+                             (ub(ub_vars) - x(ub_vars)-alpha_x.*dx(ub_vars))'*(z_u(ub_vars) + alpha_z.*dz_u(ub_vars));
+        %mu = max((centr_measure/((num_lb_vars + num_ub_vars)*mu))^3*mu,0.1*mu_prev); 
+        mu = (centr_measure/((num_lb_vars + num_ub_vars)*mu))^3*mu; 
+      %  res_mu_l(lb_vars) = mu.*ones(num_lb_vars,1)-dx(lb_vars).*dz_l(lb_vars)-(x(lb_vars)-lb(lb_vars)).*z_l(lb_vars);
+      %  res_mu_u(ub_vars) = mu.*ones(num_ub_vars,1)+dx(ub_vars).*dz_u(ub_vars)+(ub(ub_vars)-x(ub_vars)).*z_u(ub_vars);       
+        res_mu_l(lb_vars) = mu.*ones(num_lb_vars,1)-dx(lb_vars).*dz_l(lb_vars);
+        res_mu_u(ub_vars) = mu.*ones(num_ub_vars,1)+dx(ub_vars).*dz_u(ub_vars);       
+        if (Newton_struct.la_mode == "exact")
+            [dx_c,dy_c,dz_l_c,dz_u_c,instability] = ...
+            Newton_struct.Newton_backsolve(NSdata,zeros(m,1),zeros(n,1),res_mu_l,res_mu_u);
+        elseif (Newton_struct.la_mode == "inexact")
+            [droptol] = Newton_struct.Precond_struct.set_out_precond_tol(droptol,iterlin,maxit_Krylov,nnzL,roof);
+            PS.droptol = droptol; % Keep for monitoring purposes.
+            [dx_c,dy_c,dz_l_c,dz_u_c,instability,iterlin,drop_direction,Reinforce_Inner_IR] = ...
+            Newton_struct.Newton_itersolve(predictor,NSdata,PS,zeros(m,1),zeros(n,1), ...
+                                           res_mu_l,res_mu_u,maxit_Krylov,Krylov_tol);
+            % Keep track of the number of iterations performed. If an iter. is repeated, keep track of it.
+            itertot(2*ctr_struct.IP_iter) = itertot(2*ctr_struct.IP_iter) + iterlin;  
+            if (drop_direction == true)
+                [ctr_struct,mu,delta,rho] = control_direction_accuracy(ctr_struct,mu,mu_prev,delta,rho,predictor);
+                if (ctr_struct.opt == 5)    % 5 signifies failure due to inaccuracy
+                    break;
+                end
+                continue;
+            end
+        end      
+        if (instability == true)        % Checking if the matrix is too ill-conditioned. Mitigate it.
+            [ctr_struct,delta,rho,reg_limit] = control_ill_conditioning(ctr_struct,rho,delta,reg_limit,tol,predictor);
+            if (ctr_struct.opt == 4)    % 4 signifies failure due to numerical inaccuracy.
+                break;
+            end
+            continue;
         end
         ctr_struct.retry_c = 0;
-        % ____________________________________________________________________________________________________________ %
+        if (Newton_struct.la_mode == "inexact" && Reinforce_Inner_IR)
+            ctr_struct.set_proximal_inner_IR = true;
+        end
         dx = dx + dx_c;
         dy = dy + dy_c;
         dz_l = dz_l + dz_l_c;
         dz_u = dz_u + dz_u_c;
-    % ________________________________________________________________________________________________________________ %
-    
-    
-    % ================================================================================================================ %
-    % Compute the new iterate:
-    % Determine primal and dual step length. Calculate "step to the boundary" alphamax_x and alphamax_z. 
-    % Then choose 0 < tau < 1 heuristically, and set step length = tau * step to the boundary.
-    % Step in the box (primal) and non-negativity orthant (dual).
-    % ---------------------------------------------------------------------------------------------------------------- %
-    if (num_lb_vars + num_ub_vars > 0)
-        pos_idx = false(n,1);   neg_idx = false(n,1);
-        neg_idz_l = false(n,1); neg_idz_u = false(n,1);
-        pos_idx(ub_vars) = dx(ub_vars) > 0;
-        neg_idx(lb_vars) = dx(lb_vars) < 0;
-        neg_idz_l(lb_vars) = dz_l(lb_vars) < 0;
-        neg_idz_u(ub_vars) = dz_u(ub_vars) < 0;
-        alphamax_x = min([1;(lb(neg_idx)-x(neg_idx))./dx(neg_idx);...
-                         (ub(pos_idx)-x(pos_idx))./dx(pos_idx)]);
-        alphamax_z = min([1;-z_l(neg_idz_l)./dz_l(neg_idz_l);...
-                         -z_u(neg_idz_u)./dz_u(neg_idz_u)]);        
-        tau = 0.995;
-        alpha_x = tau*alphamax_x;
-        alpha_z = tau*alphamax_z;
-    else
-        alpha_x = 1;         % If we have no inequality constraints, Newton method is exact -> Take full step.
-        alpha_z = 1;        
+        % ____________________________________________________________________________________________________________ %
+
+        % ============================================================================================================ %
+        % Step in the lower-or-upper (primal) and non-negativity orthant (dual).
+        % ------------------------------------------------------------------------------------------------------------ %
+        [alpha_x,alpha_z] = step_to_the_boundary(x,z_l,z_u,dx,dz_l,dz_u,lb,ub,lb_vars,ub_vars);
+        % ____________________________________________________________________________________________________________ %
     end
-    % ________________________________________________________________________________________________________________ %
-    
     % ================================================================================================================ %
-    % Make the step.
+    % Make the step and compute the approximate rate of decrease (or increase) or mu.
     % ---------------------------------------------------------------------------------------------------------------- %
     x = x+alpha_x.*dx; y = y+alpha_z.*dy; z_l = z_l+alpha_z.*dz_l; z_u = z_u+alpha_z.*dz_u;
     if (num_lb_vars + num_ub_vars > 0)  % Only if we have inequality constraints.
         mu_prev = mu;
         mu = (x(lb_vars)-lb(lb_vars))'*z_l(lb_vars) + (ub(ub_vars)-x(ub_vars))'*z_u(ub_vars);
+        %mu = max(mu/(num_lb_vars + num_ub_vars),0.1*mu_prev);
         mu = mu/(num_lb_vars + num_ub_vars);
-        mu_rate = max(abs((mu-mu_prev)/max(mu,mu_prev)),0.95);
-        mu_rate = max(mu_rate,0.1);
+        mu_rate = min(abs((mu-mu_prev)/max(mu,mu_prev)),0.9); 
+        mu_rate = max(mu_rate,0.2);
     else
-        mu_rate = 0.9;
+        mu_rate = 0.9;      % Arbitrary choice.
     end
     % ________________________________________________________________________________________________________________ %
     
@@ -353,22 +398,10 @@ while (ctr_struct.IP_iter < maxit)
     % ---------------------------------------------------------------------------------------------------------------- %
     new_nr_res_p = b-A_struct.A(x);
     new_nr_res_d = c + Q_struct.Q(x) - A_struct.A_tr(y) - z_l + z_u;
-    cond = 0.95*norm(nr_res_p) > norm(new_nr_res_p);
-    if (cond)
-        lambda = y;
-        delta = max(reg_limit,delta*(1-mu_rate));  
-    else
-        delta = max(reg_limit,delta*(1-0.666*mu_rate));     % Slower rate of decrease, to avoid losing centrality.       
-        ctr_struct.no_dual_update = ctr_struct.no_dual_update + 1;
-    end
-    cond = 0.95*norm(nr_res_d) > norm(new_nr_res_d);
-    if (cond)
-        zeta = x;
-        rho = max(reg_limit,rho*(1-mu_rate));  
-    else
-        rho = max(reg_limit,rho*(1-0.666*mu_rate));         % Slower rate of decrease, to avoid losing centrality.     
-        ctr_struct.no_primal_update = ctr_struct.no_primal_update + 1;
-    end
+    PMM_struct = build_PMM_structure(zeta,lambda,delta,rho,reg_limit,mu_rate);
+    [PMM_struct,ctr_struct] = update_PMM_parameters(ctr_struct,nr_res_p,new_nr_res_p,nr_res_d,new_nr_res_d,x,y,PMM_struct);
+    lambda = PMM_struct.lambda;     zeta = PMM_struct.zeta;     
+    delta = PMM_struct.delta;       rho = PMM_struct.rho; 
     % ________________________________________________________________________________________________________________ %
 
     % ================================================================================================================ %
@@ -376,13 +409,20 @@ while (ctr_struct.IP_iter < maxit)
     % ---------------------------------------------------------------------------------------------------------------- %
     pres_inf = norm(new_nr_res_p);
     dres_inf = norm(new_nr_res_d);  
-    IP_PMM_output(fid,printlevel,ctr_struct.IP_iter,pres_inf,dres_inf,mu,alpha_x,alpha_z);
+    if (Newton_struct.la_mode == "exact")
+        IP_PMM_output(fid,printlevel,ctr_struct.IP_iter,pres_inf,dres_inf,mu,alpha_x,alpha_z,delta,rho);
+    elseif (Newton_struct.la_mode == "inexact")
+        Krylov_its = Krylov_its + itertot(2*ctr_struct.IP_iter-1) + itertot(2*ctr_struct.IP_iter);
+        IP_PMM_output(fid,printlevel,ctr_struct.IP_iter,pres_inf,dres_inf,mu,alpha_x,alpha_z,delta,rho,...
+                      Newton_struct.la_mode,Krylov_its,nnzL);
+    end
     % ________________________________________________________________________________________________________________ %
-end % while (iter < maxit)
+end % while (IPiter < maxit)
 
 % The IPM has terminated because the solution accuracy is reached or the maximum number 
 % of iterations is exceeded, or the problem under consideration is infeasible. Print result. 
 IP_iter = ctr_struct.IP_iter;
+if (Newton_struct.la_mode == "exact") Krylov_its = IP_iter; end
 opt =  ctr_struct.opt;
 fprintf('iterations: %4d\n', IP_iter);
 fprintf('primal feasibility: %8.2e\n', norm(A_struct.A(x)-b));
