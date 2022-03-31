@@ -146,9 +146,18 @@ ctr_struct = build_control_structure();                   % Contains all the mon
 ctr_struct.isQP = (Q_struct.Q_1_norm > 0);                % isQP monitors whether we are solving a QP (true) or 
                                                           % an LP (false).
 delta = 8;  rho = 8;                                      % Initial dual and primal regularization value.
+if (Q_struct.nnz)
+    hard_lim = 5e-8;
+else
+    hard_lim = 5e-10;
+end
 reg_limit = max(0.1*min(tol,1e-6)*(1/max(1e0,max(A_struct.A_1_norm*A_struct.A_inf_norm,...
-                Q_struct.Q_1_norm*Q_struct.Q_inf_norm))),5e-10);
-reg_limit = min(reg_limit,1e-8);                          % Controlled perturbation.
+                Q_struct.Q_1_norm*Q_struct.Q_inf_norm))),hard_lim);
+if (Q_struct.nnz)
+    reg_limit = min(reg_limit,1e-6);                      % Controlled perturbation.
+else
+    reg_limit = min(reg_limit,1e-8);
+end
 pivot_thr = 1e-10;                                        % Minimum pivot threshold for factorization methods.  
 if (Newton_struct.la_mode == "inexact")
     iterlin = 50;                                         % Estimate of Krylov iterations.
@@ -204,6 +213,7 @@ while (ctr_struct.IP_iter < maxit)
     % ================================================================================================================ %
     % Check terminatio criteria
     % ---------------------------------------------------------------------------------------------------------------- %
+   % if (p_inf/(1+norm(b)) < tol && d_inf/(1+norm(c)+min((0.5)*(x'*Q_struct.Q(x)),100)) < tol &&  mu < tol )
     if (p_inf/(1+norm(b)) < tol && d_inf/(1+norm(c)) < tol &&  mu < tol )
         fprintf('optimal solution found\n');
         ctr_struct.opt = 1;
@@ -228,9 +238,11 @@ while (ctr_struct.IP_iter < maxit)
     % ================================================================================================================ %
     % Avoid the possibility of converging to a local minimum -> Decrease the minimum regularization value.
     % ---------------------------------------------------------------------------------------------------------------- %
-    if (reg_limit ~= 5e-13)
-        [ctr_struct,reg_limit] = avoid_local_min(ctr_struct,rho,delta,reg_limit);
-       % pivot_thr = reg_limit/5;
+    if (Q_struct.nnz==0)
+        if (reg_limit ~= 5e-13)
+            [ctr_struct,reg_limit] = avoid_local_min(ctr_struct,rho,delta,reg_limit);
+            pivot_thr = reg_limit/5;
+        end
     end
     % ________________________________________________________________________________________________________________ %
     % ================================================================================================================ %
@@ -239,7 +251,7 @@ while (ctr_struct.IP_iter < maxit)
     if (Newton_struct.la_mode == "exact")
         NSdata = Newton_struct.Newton_fact(x,z_l,z_u,delta,rho,pivot_thr);
     elseif (Newton_struct.la_mode == "inexact")
-        NSdata = Newton_struct.Newton_matrix_data(ctr_struct.IP_iter,A_struct,Q_struct,x,z_l,z_u,...
+        NSdata = Newton_struct.Newton_matrix_data(ctr_struct.IP_iter,mu,A_struct,Q_struct,x,z_l,z_u,...
                                                   delta,rho,pivot_thr,solver,Newton_struct.prec_approach,p_inf,d_inf); 
         if (Newton_struct.prec_approach == "LDL_based_preconditioner")   % Indicate which minres solver to use.
             NSdata.minres_setting = Newton_struct.minres_setting;

@@ -79,7 +79,7 @@ function [solution_struct] = Set_Up_IP_PMM(A,Q,b,c,obj_const_term,lb,ub,tol,maxi
     % Scale the problem matrix
     % ---------------------------------------------------------------------------------------------------------------- %
     scaling_direction = 'l';
-    scaling_mode = 2;
+    scaling_mode = 0;
      if (scaling_direction == 'r') % Apply the right scaling.
         [D] = Scale_the_problem(A,scaling_mode,scaling_direction);
         A = A*spdiags(D,0,n,n); 
@@ -146,7 +146,7 @@ function [solution_struct] = Set_Up_IP_PMM(A,Q,b,c,obj_const_term,lb,ub,tol,maxi
         Newton_struct.Newton_backsolve = @(NSdata,res_p,res_d,res_mu_l,res_mu_u) ...
                                       Newton_backsolve(NSdata,res_p,res_d,res_mu_l,res_mu_u);
     elseif (la_mode == "inexact")
-        Newton_struct.prec_approach = "LDL_based_preconditioner";   % Use "Chol_based_preconditioner" for Schur complement approximation,
+        Newton_struct.prec_approach = "Chol_based_preconditioner";   % Use "Chol_based_preconditioner" for Schur complement approximation,
                                                                      % or "LDL_based_preconditioner" for LDL'-based approximation.
         if (Newton_struct.prec_approach == "Chol_based_preconditioner") 
             double_approximation = true;                       % If we use Cholesky-based preconditioner, drop dense rows and columns.  
@@ -176,8 +176,8 @@ function [solution_struct] = Set_Up_IP_PMM(A,Q,b,c,obj_const_term,lb,ub,tol,maxi
         Newton_struct.NE_multiplier = @(x,NSdata)  NE_multiplier(x,NSdata);
         Newton_struct.Newton_itersolve = @ (pred,NSdata,PS,res_p,res_d,res_mu_l,res_mu_u,maxit,tol) ...
                             Newton_itersolve(fid,pred,NSdata,PS,res_p,res_d,res_mu_l,res_mu_u,maxit,tol,printlevel);
-        Newton_struct.Newton_matrix_data = @ (iter,A_struct,Q_struct,x,z_l,z_u,delta,rho,pivot_thr,solver,prec_approach,p_inf,d_inf) ...
-                            Newton_matrix_data(iter,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_vars,ub_vars,delta,rho,m,n,...
+        Newton_struct.Newton_matrix_data = @ (iter,mu,A_struct,Q_struct,x,z_l,z_u,delta,rho,pivot_thr,solver,prec_approach,p_inf,d_inf) ...
+                            Newton_matrix_data(iter,mu,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_vars,ub_vars,delta,rho,m,n,...
                                                pivot_thr,solver,prec_approach,Newton_struct.IR,p_inf,d_inf);
         % ____________________________________________________________________________________________________________ %
         % ============================================================================================================ %
