@@ -29,7 +29,7 @@ function [droptol] = precond_settol(droptol,iter,itmax,nnzL,roof)
     elseif iter > itmax/2
         droptol = max(droptol/2,1/droptol_thr);
     elseif iter < itmax/5
-        droptol = min(droptol*2,droptol_thr);
+        droptol = min(droptol*1.1,droptol_thr);
     end
     
 end

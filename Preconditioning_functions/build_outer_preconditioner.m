@@ -13,12 +13,16 @@ function [PS] = build_outer_preconditioner(A,A_tr,Q,NS,droptol,mu,R,C,double_app
     PS.stability_regularizer = 0;
     
     % Iterative refinement: external, internal or none.
-    if ((NS.IR == "inner" || NS.IR == "inner_outer") && (min(NS.delta,NS.rho) < 5e-8)) 
+    if ((NS.IR == "inner" || NS.IR == "inner_outer") && (min(NS.delta,NS.rho) <= 5e-10)) 
         PS.iter_refinement = true;
         if (set_proximal_inner_IR)
             PS.iter_refinement_maxit = 1;
         end
-        PS.stability_regularizer = 5e-8;
+        if (nnz(Q))
+            PS.stability_regularizer = 5e-10;
+        else
+            PS.stability_regularizer = 0;
+        end
         stability_regularizer = PS.stability_regularizer;
     elseif (NS.prec_approach == "LDL_based_preconditioner" && ...
            (NS.solver == "minres" && NS.minres_setting == "augmented_system") && ...
@@ -29,7 +33,6 @@ function [PS] = build_outer_preconditioner(A,A_tr,Q,NS,droptol,mu,R,C,double_app
         stability_regularizer = NS.stability_regularizer;
     end      
     threshold = min(min(droptol,mu*droptol),1e0);
-    %threshold = 0;
     n = NS.n;       m = NS.m;
     PS.n = n;       PS.m = m;
     PS.instability = false;
@@ -39,24 +42,13 @@ function [PS] = build_outer_preconditioner(A,A_tr,Q,NS,droptol,mu,R,C,double_app
     % --------------------------------------------------------------------------------------------------- %
    
     B = true(n,1);
- 
+    B_Q = true(n,1);
     E = 1./(NS.Theta_inv + NS.Q_struct.diag + stability_regularizer);
     PS.Q_barInv = E;
     N = (E<threshold);
-%     out_inf = max(NS.d_inf,NS.p_inf);
-%     if ((nnz(N) < 0.1*n) && (out_inf > 1e-4))
-%         N = false(n,1);
-%         if (out_inf > 5e-1)
-%             force_drop = 0.25;
-%         elseif (out_inf > 5e-3)
-%             force_drop = 0.15;
-%         else
-%             force_drop = 0.1;
-%         end
-%         [~,I] = mink(E,ceil(force_drop*n));
-%         N(I) = true;   
-%     end
+    N_Q = (E<threshold*1e0);
     B = xor(B,N);       % N = {1,...,n}\B.
+    B_Q = xor(B_Q,N_Q);
     PS.nnz_B = nnz(B);
     if (NS.prec_approach == "Chol_based_preconditioner")
         B = and(B,C);
@@ -104,7 +96,7 @@ function [PS] = build_outer_preconditioner(A,A_tr,Q,NS,droptol,mu,R,C,double_app
         if (NS.solver == "minres" && NS.minres_setting == "augmented_system")
             PS.iter_refinement_maxit = 1;       % No IR is allowed in this case.
             A_tilde = A;    nnz_N = nnz(N);
-            pivot_threshold = 1e-10;
+            pivot_threshold = 5e-2*max(min(min(NS.delta,NS.rho),1e-4),stability_regularizer);
             if (nnz_N)
                 A_tilde(:,N) = sparse(m,nnz_N);
                 Q_tilde = sparse(n,n);
@@ -116,27 +108,30 @@ function [PS] = build_outer_preconditioner(A,A_tr,Q,NS,droptol,mu,R,C,double_app
              K = [-Q_tilde - spdiags(NS.Theta_inv+stability_regularizer,0,n,n)               A_tilde';
                   A_tilde                 spdiags((NS.delta+stability_regularizer).*ones(m,1),0,m,m)];
         else
-            pivot_threshold = 1e-10;
+            if (min(NS.delta,NS.rho) >= 1e-8)
+                pivot_threshold = 1e-1*min(min(NS.delta,NS.rho),1e-4);
+            else
+                pivot_threshold = 1e-6;
+            end
             A_tilde = A(:,B);
-            Q_tilde = Q(B,B) + spdiags(NS.Theta_inv(B) + stability_regularizer,0,PS.nnz_B,PS.nnz_B);
+           % Q_tilde = Q(B,B) + spdiags(NS.Theta_inv(B) + stability_regularizer,0,nnz(B),nnz(B));
+            
+            Q_tilde = spdiags(NS.Q_struct.diag + NS.Theta_inv + stability_regularizer,0,n,n);
+            Q_tilde(B_Q,B_Q) = Q(B_Q,B_Q) + spdiags(NS.Theta_inv(B_Q) + stability_regularizer,0,nnz(B_Q),nnz(B_Q));
             if (NS.solver == "minres")
-                nnz_N = nnz(N);
-                Q_N_tilde = NS.Q_struct.diag(N) + NS.Theta_inv(N) + stability_regularizer;
-                Q_BN_tilde = sparse(n,n);
-                Q_BN_tilde(N,N) = spdiags(Q_N_tilde,0,nnz_N,nnz_N);
-                Q_BN_tilde(B,B) = Q_tilde;
-                if (PS.nnz_B)
-                    [PS.L_Q,chol_flag,PS.P_Q] = chol(Q_BN_tilde,'lower','vector');     % Cholesky factorization 
+                if (nnz(B_Q))
+                    [PS.L_Q,chol_flag,PS.P_Q] = chol(Q_tilde,'lower','vector');     % Cholesky factorization 
                     if (chol_flag ~= 0)
                         PS.instability = true;
                     end
                 else
-                    PS.L_Q = spdiags(Q_N_tilde.^(1/2),0,n,n);
+                    PS.L_Q = Q_tilde.^(1/2);
                     PS.P_Q = 1:n;
                 end
                 PS.P_Qinv(PS.P_Q) = 1:n;
             end
-            K = [ (-Q_tilde)                                                        A_tilde';
+            
+            K = [ -(Q_tilde(B,B))                                                      A_tilde';
                   A_tilde           spdiags((NS.delta+stability_regularizer).*ones(m,1),0,m,m)];
           
         end
