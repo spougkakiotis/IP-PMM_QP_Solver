@@ -58,6 +58,8 @@ function [dx,dy,dz_l,dz_u,instability,Krylov_iter,drop_direction,Reinforce_Inner
                 res_rhs = IR_residual(n+1:n+m) + NS.A_struct.A(Theta.*IR_residual(1:n));    % PCG right-hand-side.
             end
             tol = max(1e-10,tol/max(1,norm(res_rhs,'Inf')));
+            tol_mu = min(NS.mu*1e-1,1e-3);
+            tol = max(tol_mu,tol);
             accuracy_bound = max(tol*1e1, accuracy_bound);
             [lhs_y, flag, res, iter] = pcg(@(x) NE_multiplier(x,NS), res_rhs, tol, maxit, @(x) Precond_Operator(x,PS,solver));
             lhs_x = (Theta).*(-IR_residual(1:n) + NS.A_struct.A_tr(lhs_y));
@@ -87,8 +89,8 @@ function [dx,dy,dz_l,dz_u,instability,Krylov_iter,drop_direction,Reinforce_Inner
                 end
             end
             tol = max(1e-10,(tol)/max(1,norm(IR_residual,'Inf')));
-            %tol = 0.5*min(1e-3,out_inf);
-            %tol = max(tol,1e-4);
+            tol_mu = min(NS.mu*1e-1,1e-3);
+            tol = max(tol_mu,tol);
             accuracy_bound = max(tol*1e1, accuracy_bound);
             [lhs_c, flag, res, iter] = minres(@(x) AS_multiplier(x,NS), IR_residual, tol, maxit, @(x) Precond_Operator(x,PS,solver));
             lhs = lhs + lhs_c;

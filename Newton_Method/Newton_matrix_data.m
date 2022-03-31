@@ -1,4 +1,4 @@
-function [NS] = Newton_matrix_data(iter,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_vars,ub_vars,delta,rho,m,n,pivot_thr,solver,prec_approach,IR,p_inf,d_inf)
+function [NS] = Newton_matrix_data(iter,mu,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_vars,ub_vars,delta,rho,m,n,pivot_thr,solver,prec_approach,IR,p_inf,d_inf)
 % ===================================================================================================================== %
 % Newton_matrix_setting: Store all relevant information about the Newton matrix.
 % --------------------------------------------------------------------------------------------------------------------- %
@@ -12,7 +12,7 @@ function [NS] = Newton_matrix_data(iter,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_var
     NS.m = m;                  NS.n = n;
     NS.x = x;                  NS.z_l = z_l;              NS.z_u = z_u;
     NS.lb = lb;                NS.ub = ub;
-    NS.lb_vars = lb_vars;      NS.ub_vars = ub_vars;
+    NS.lb_vars = lb_vars;      NS.ub_vars = ub_vars;      NS.mu = mu;
     NS.Theta_inv = rho.*ones(n,1);     % lb_vars and ub_vars are mutually exclusive by construction.
                                        % It suffices to use a single Theta_inv matrix.
     NS.Theta_inv(lb_vars) = NS.Theta_inv(lb_vars) + z_l(lb_vars)./(x(lb_vars)-lb(lb_vars));
@@ -29,7 +29,11 @@ function [NS] = Newton_matrix_data(iter,A_struct,Q_struct,x,z_l,z_u,lb,ub,lb_var
         NS.iter_refinement = false;
         NS.IR_residual = false;
         NS.iter_refinement_maxit = 1;
-        NS.stability_regularizer = 0;
+        if (Q_struct.nnz)
+            NS.stability_regularizer = 1e-10;
+        else
+            NS.stability_regularizer = 0;
+        end
     end
     NS.IR = IR; 
 end
